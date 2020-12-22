@@ -343,6 +343,12 @@ export class OpenApiValidator {
       throw ono(
         "unknownFormats must contain an array of unknownFormats, 'ignore' or true",
       );
+
+    if (options.schemaObjectMapper && (!options.validateResponses || !options.validateRequests) ) {
+      throw ono(
+        "schemaObjectMapper requires that the validateRequests and validateResponses options are both enabled.",
+      );
+    }
   }
 
   private normalizeOptions(options: OpenApiValidatorOpts): void {

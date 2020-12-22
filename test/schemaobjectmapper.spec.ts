@@ -92,4 +92,58 @@ describe('schemaobjectmapper', () => {
         expect(r.body.creationDate).to.equal('2020-12-20');
         expect(r.body.creationDateTime).to.equal("2020-12-20T07:28:19.213Z");
       }));
+
+  it('should throw an error if either validateRequests or validateResponses are not set', async () => {
+      try {
+        let appError = await createApp(
+          {
+            apiSpec: apiSpecPath,
+            validateRequests: {
+              coerceTypes: true
+            },
+            schemaObjectMapper: {
+              'ObjectId': {
+                deserialize: (o) => new ObjectID(o),
+                serialize: (o) => o.toString(),
+              },
+              'Date': {
+                deserialize: (o) => new Date(o),
+                serialize: (o) => o.toISOString().slice(0, 10),
+              },
+              'DateTime': {
+                deserialize: (o) => new Date(o),
+                serialize: (o) => o.toISOString(),
+              },
+            },
+
+          },
+          3005,
+          (app) => {
+            app.get([`${app.basePath}/users/:id?`], (req, res) => {
+              let date = new Date("2020-12-20T07:28:19.213Z");
+              res.json({
+                id: req.params.id,
+                creationDateTime: date,
+                creationDate: date
+              });
+            });
+            app.use((err, req, res, next) => {
+              console.error(err)
+              res.status(err.status ?? 500).json({
+                message: err.message,
+                code: err.status ?? 500,
+              });
+            });
+          },
+          false,
+        );
+
+        throw('Configuration should not work');
+
+      } catch (e) {
+        console.log(e);
+        expect(e).to.exist;
+      }
+    }
+  );
 });
