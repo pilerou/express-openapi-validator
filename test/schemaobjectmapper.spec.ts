@@ -141,8 +141,8 @@ describe('schemaobjectmapper', () => {
         throw('Configuration should not work');
 
       } catch (e) {
-        console.log(e);
-        expect(e).to.exist;
+        expect(e).to.be.not.null;;
+        expect(e.message).to.contain('requires that the validateRequests and validateResponses');
       }
     }
   );
