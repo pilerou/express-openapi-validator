@@ -26,6 +26,15 @@ class BadDate extends Date {
   }
 }
 
+function toSummary(title, value) {
+  return {
+    [title]: {
+      value: value?.toISOString?.() || value?.toString(),
+      typeof: typeof value
+    }
+  }
+}
+
 describe('serdes', () => {
   let app = null;
 
@@ -61,7 +70,12 @@ describe('serdes', () => {
           res.json({
             id: req.params.id,
             creationDateTime: date,
-            creationDate: date
+            creationDate: date,
+            shortOrLong: 'a',
+            summary: {
+              ...toSummary('req.query.date-time-from-inline', req.query['date-time-from-inline']),
+              ...toSummary('req.query.date-time-from-schema', req.query['date-time-from-schema']),
+            },
           });
         });
         app.post([`${app.basePath}/users`], (req, res) => {
@@ -74,10 +88,15 @@ describe('serdes', () => {
           if (typeof req.body.creationDateTime !== 'object' || !(req.body.creationDateTime instanceof Date)) {
             throw new Error("Should be deserialized to Date object");
           }
-          res.json(req.body);
+          if (typeof req.body.creationDateTimeInline !== 'object' || !(req.body.creationDateTimeInline instanceof Date)) {
+            throw new Error("Should be deserialized to Date object");
+          }
+          res.json({
+            ...req.body,
+            summary: Object.entries(req.body).reduce((acc, [k, v]) => Object.assign(acc, toSummary(k, v)), {})
+          });
         });
         app.use((err, req, res, next) => {
-          console.error(err)
           res.status(err.status ?? 500).json({
             message: err.message,
             code: err.status ?? 500,
@@ -98,17 +117,21 @@ describe('serdes', () => {
       .get(`${app.basePath}/users/1234`)
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.params.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/params/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should control GOOD id format and get a response in expected format', async () =>
     request(app)
-      .get(`${app.basePath}/users/5fdefd13a6640bb5fb5fa925`)
+      .get(`${app.basePath}/users/5fdefd13a6640bb5fb5fa925?date-time-from-inline=2019-11-20T01%3A11%3A54.930Z&date-time-from-schema=2020-11-20T01%3A11%3A54.930Z`)
       .expect(200)
       .then((r) => {
         expect(r.body.id).to.equal('5fdefd13a6640bb5fb5fa925');
         expect(r.body.creationDate).to.equal('2020-12-20');
         expect(r.body.creationDateTime).to.equal("2020-12-20T07:28:19.213Z");
+        expect(r.body.summary['req.query.date-time-from-schema'].value).to.equal("2020-11-20T01:11:54.930Z");
+        expect(r.body.summary['req.query.date-time-from-schema'].typeof).to.equal("object");
+        expect(r.body.summary['req.query.date-time-from-inline'].value).to.equal("2019-11-20T01:11:54.930Z");
+        expect(r.body.summary['req.query.date-time-from-inline'].typeof).to.equal("object");
       }));
 
   it('should POST also works with deserialize on request then serialize en response', async () =>
@@ -117,7 +140,9 @@ describe('serdes', () => {
       .send({
         id: '5fdefd13a6640bb5fb5fa925',
         creationDateTime: '2020-12-20T07:28:19.213Z',
-        creationDate: '2020-12-20'
+        creationDateTimeInline: '2019-11-21T07:24:19.213Z',
+        creationDate: '2020-12-20',
+        shortOrLong: 'ab',
       })
       .set('Content-Type', 'application/json')
       .expect(200)
@@ -125,6 +150,12 @@ describe('serdes', () => {
         expect(r.body.id).to.equal('5fdefd13a6640bb5fb5fa925');
         expect(r.body.creationDate).to.equal('2020-12-20');
         expect(r.body.creationDateTime).to.equal("2020-12-20T07:28:19.213Z");
+        expect(r.body.summary['creationDate'].value).to.equal('2020-12-20T00:00:00.000Z');
+        expect(r.body.summary['creationDate'].typeof).to.equal('object');
+        expect(r.body.summary['creationDateTime'].value).to.equal('2020-12-20T07:28:19.213Z');
+        expect(r.body.summary['creationDateTime'].typeof).to.equal('object');
+        expect(r.body.summary['creationDateTimeInline'].value).to.equal('2019-11-21T07:24:19.213Z');
+        expect(r.body.summary['creationDateTimeInline'].typeof).to.equal('object');
       }));
 
   it('should POST throw error on invalid schema ObjectId', async () =>
@@ -133,12 +164,13 @@ describe('serdes', () => {
       .send({
         id: '5fdefd13a6640bb5fb5fa',
         creationDateTime: '2020-12-20T07:28:19.213Z',
-        creationDate: '2020-12-20'
+        creationDate: '2020-12-20',
+        shortOrLong: 'abcd',
       })
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/body/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should POST throw error on invalid schema Date', async () =>
@@ -152,9 +184,29 @@ describe('serdes', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.creationDate should match format "date"');
+        expect(r.body.message).to.equal('request/body/creationDate must match format "date"');
       }));
 
+  it('should enforce anyOf validations', async () =>
+    request(app)
+      .post(`${app.basePath}/users`)
+      .send({
+        id: '5fdefd13a6640bb5fb5fa925',
+        creationDateTime: '2020-12-20T07:28:19.213Z',
+        creationDate: '2020-12-20',
+        shortOrLong: 'abc',
+      })
+      .set('Content-Type', 'application/json')
+      .expect(400)
+      .then((r) => {
+        expect(r.body.message).to.equal(
+          [
+            'request/body/shortOrLong must NOT have more than 2 characters',
+            'request/body/shortOrLong must NOT have fewer than 4 characters',
+            'request/body/shortOrLong must match a schema in anyOf',
+          ].join(', '),
+        );
+      }));
 });
 
 
@@ -194,6 +246,7 @@ describe('serdes serialize response components only', () => {
             id: new ObjectID(req.params.id),
             creationDateTime: date,
             creationDate: undefined,
+            shortOrLong: 'a',
           };
           if (req.query.baddateresponse === 'functionNotExists') {
             result.creationDate = new ObjectID();
@@ -222,7 +275,6 @@ describe('serdes serialize response components only', () => {
           res.json(req.body);
         });
         app.use((err, req, res, next) => {
-          console.error(err)
           res.status(err.status ?? 500).json({
             message: err.message,
             code: err.status ?? 500,
@@ -243,7 +295,7 @@ describe('serdes serialize response components only', () => {
       .get(`${app.basePath}/users/1234`)
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.params.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/params/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should control GOOD id format and get a response in expected format', async () =>
@@ -283,7 +335,7 @@ describe('serdes serialize response components only', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/body/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should POST throw error on invalid schema Date', async () =>
@@ -297,7 +349,7 @@ describe('serdes serialize response components only', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.creationDate should match format "date"');
+        expect(r.body.message).to.equal('request/body/creationDate must match format "date"');
       }));
 
   it('should throw error 500 on invalid object type instead of Date expected', async () =>
@@ -306,8 +358,30 @@ describe('serdes serialize response components only', () => {
       .query({ baddateresponse: 'functionNotExists' })
       .expect(500)
       .then((r) => {
-        console.log(r);
-        expect(r.body.message).to.equal('.response.creationDate format is invalid');
+        expect(r.body.message).to.equal(
+          '/response/creationDate format is invalid',
+        );
+      }));
+
+  it('should enforce anyOf validations', async () =>
+    request(app)
+      .post(`${app.basePath}/users`)
+      .send({
+        id: '5fdefd13a6640bb5fb5fa925',
+        creationDateTime: '2020-12-20T07:28:19.213Z',
+        creationDate: '2020-12-20',
+        shortOrLong: 'abc',
+      })
+      .set('Content-Type', 'application/json')
+      .expect(400)
+      .then((r) => {
+        expect(r.body.message).to.equal(
+          [
+            'request/body/shortOrLong must NOT have more than 2 characters',
+            'request/body/shortOrLong must NOT have fewer than 4 characters',
+            'request/body/shortOrLong must match a schema in anyOf',
+          ].join(', '),
+        );
       }));
 
   /*
@@ -319,7 +393,6 @@ describe('serdes serialize response components only', () => {
       .query({baddateresponse : 'functionBadFormat'})
       .expect(200)
       .then((r) => {
-        console.log(r.body);
         expect(r.body.message).to.equal('Something saying that date is not date-time format');
       }));
 
@@ -327,7 +400,7 @@ describe('serdes serialize response components only', () => {
 
 });
 
-describe('serdes with jsonType array type string-list', () => {
+describe('serdes with array type string-list', () => {
   let app = null;
 
   before(async () => {
@@ -351,7 +424,6 @@ describe('serdes with jsonType array type string-list', () => {
           },
           {
             format: 'string-list',
-            jsonType: 'array',
             deserialize: (s): string[] => s.split(',').map(s => s.trim()),
             serialize: (o): string => (o as string[]).join(','),
           },
@@ -387,7 +459,6 @@ describe('serdes with jsonType array type string-list', () => {
           res.json(req.body);
         });
         app.use((err, req, res, next) => {
-          console.error(err)
           res.status(err.status ?? 500).json({
             message: err.message,
             code: err.status ?? 500,
@@ -408,7 +479,7 @@ describe('serdes with jsonType array type string-list', () => {
       .get(`${app.basePath}/users/1234`)
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.params.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/params/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should control GOOD id format and get a response in expected format', async () => {
@@ -431,7 +502,8 @@ describe('serdes with jsonType array type string-list', () => {
         id: '5fdefd13a6640bb5fb5fa925',
         tags: 'aa,bb,cc',
         creationDateTime: '2020-12-20T07:28:19.213Z',
-        creationDate: '2020-12-20'
+        creationDate: '2020-12-20',
+        shortOrLong: 'abcdef',
       })
       .set('Content-Type', 'application/json')
       .expect(200)
@@ -454,7 +526,7 @@ describe('serdes with jsonType array type string-list', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.id should match pattern "^[0-9a-fA-F]{24}$"');
+        expect(r.body.message).to.equal('request/body/id must match pattern "^[0-9a-fA-F]{24}$"');
       }));
 
   it('should POST throw error on invalid schema Date', async () =>
@@ -469,7 +541,7 @@ describe('serdes with jsonType array type string-list', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.creationDate should match format "date"');
+        expect(r.body.message).to.equal('request/body/creationDate must match format "date"');
       }));
 
   it('should POST throw error for deserialize on request of non-string format', async () =>
@@ -484,9 +556,29 @@ describe('serdes with jsonType array type string-list', () => {
       .set('Content-Type', 'application/json')
       .expect(400)
       .then((r) => {
-        expect(r.body.message).to.equal('request.body.tags must be a string');
+        expect(r.body.message).to.equal('request/body/tags must be string');
       }));
 
+  it('should enforce anyOf validations', async () =>
+    request(app)
+      .post(`${app.basePath}/users`)
+      .send({
+        id: '5fdefd13a6640bb5fb5fa925',
+        creationDateTime: '2020-12-20T07:28:19.213Z',
+        creationDate: '2020-12-20',
+        shortOrLong: 'abc',
+      })
+      .set('Content-Type', 'application/json')
+      .expect(400)
+      .then((r) => {
+        expect(r.body.message).to.equal(
+          [
+            'request/body/shortOrLong must NOT have more than 2 characters',
+            'request/body/shortOrLong must NOT have fewer than 4 characters',
+            'request/body/shortOrLong must match a schema in anyOf',
+          ].join(', '),
+        );
+      }));
 });
 
 

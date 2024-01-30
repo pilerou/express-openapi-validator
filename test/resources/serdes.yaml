@@ -13,32 +13,78 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/ObjectId"
+        - name: date-time-from-inline
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: date-time-from-schema
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DateTime"
         - name: baddateresponse
           in: query
           schema:
             type: string
             enum: ['functionNotExists', 'functionBadFormat']
+        - name: shortOrLong
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ShortOrLong"
       responses:
         200:
           description: ""
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                allOf:
+                  - $ref: "#/components/schemas/User"
+                  - type: object
+                    properties:
+                      summary:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            value:
+                              type: string
+                            typeof:
+                              type: string
   /users:
     post:
       requestBody:
         content :
           application/json:
             schema:
-              $ref: '#/components/schemas/User'
+              allOf:
+                - $ref: '#/components/schemas/User'
+                - type: object
+                  properties:
+                    creationDateTimeInline:
+                      type: string
+                      format: date-time
       responses:
         200:
           description: ""
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                allOf:
+                  - $ref: "#/components/schemas/User"
+                  - type: object
+                    properties:
+                      summary:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            value:
+                              type: string
+                            typeof:
+                              type: string
 components:
   schemas:
     ObjectId:
@@ -51,6 +97,12 @@ components:
     DateTime:
       type: string
       format: date-time
+    ShortOrLong:
+      type: string
+      format: mongo-objectid
+      anyOf:
+        - maxLength: 2
+        - minLength: 4
     StringList:
       type: string
       format: string-list
@@ -65,3 +117,5 @@ components:
           $ref: "#/components/schemas/DateTime"
         creationDate:
           $ref: "#/components/schemas/Date"
+        shortOrLong:
+          $ref: "#/components/schemas/ShortOrLong"

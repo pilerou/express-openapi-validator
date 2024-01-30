@@ -1,23 +1,31 @@
-import * as Ajv from 'ajv';
+import type { ErrorObject } from 'ajv-draft-04';
 import { Request } from 'express';
 import { ValidationError } from '../framework/types';
 
 export class ContentType {
-  public readonly contentType: string = null;
   public readonly mediaType: string = null;
-  public readonly charSet: string = null;
-  public readonly withoutBoundary: string = null;
   public readonly isWildCard: boolean;
+  public readonly parameters: { charset?: string, boundary?: string } & Record<string, string> = {};
   private constructor(contentType: string | null) {
-    this.contentType = contentType;
     if (contentType) {
-      this.withoutBoundary = contentType.replace(/;\s{0,}boundary.*/, '').toLowerCase();
-      this.mediaType = this.withoutBoundary.split(';')[0].toLowerCase().trim();
-      this.charSet = this.withoutBoundary.split(';')[1]?.toLowerCase();
-      this.isWildCard = RegExp(/^[a-z]+\/\*$/).test(this.contentType);
-      if (this.charSet) {
-        this.charSet = this.charSet.toLowerCase().trim();
+      const parameterRegExp = /;\s*([^=]+)=([^;]+)/g;
+      const paramMatches = contentType.matchAll(parameterRegExp)
+      if (paramMatches) {
+        this.parameters = {};
+        for (let match of paramMatches) {
+          const key = match[1].toLowerCase();
+          let value = match[2];
+
+          if (key === 'charset') {
+            // charset parameter is case insensitive
+            // @see [rfc2046, Section 4.1.2](https://www.rfc-editor.org/rfc/rfc2046#section-4.1.2)
+            value = value.toLowerCase();
+          }
+          this.parameters[key] = value;
+        };
       }
+      this.mediaType = contentType.split(';')[0].toLowerCase().trim();
+      this.isWildCard = RegExp(/^[a-z]+\/\*$/).test(contentType);
     }
   }
   public static from(req: Request): ContentType {
@@ -28,12 +36,30 @@ export class ContentType {
     return new ContentType(type);
   }
 
-  public equivalents(): string[] {
-    if (!this.withoutBoundary) return [];
-    if (this.charSet) {
-      return [this.mediaType, `${this.mediaType}; ${this.charSet}`];
+  public equivalents(): ContentType[] {
+    const types: ContentType[] = [];
+    if (!this.mediaType) {
+      return types;
     }
-    return [this.withoutBoundary, `${this.mediaType}; charset=utf-8`];
+    types.push(new ContentType(this.mediaType));
+
+    if (!this.parameters['charset']) {
+      types.push(new ContentType(`${this.normalize(['charset'])}; charset=utf-8`));
+    }
+    return types;
+  }
+
+  public normalize(excludeParams: string[] = ['boundary']): string {
+    let parameters = '';
+    Object.keys(this.parameters)
+      .sort()
+      .forEach((key) => {
+        if (!excludeParams.includes(key)) {
+          parameters += `; ${key}=${this.parameters[key]}`                  
+        }
+      });
+    if (this.mediaType)
+      return this.mediaType + parameters;
   }
 }
 
@@ -42,9 +68,7 @@ export class ContentType {
  * TODO - do this some other way
  * @param errors
  */
-export function augmentAjvErrors(
-  errors: Ajv.ErrorObject[] = [],
-): Ajv.ErrorObject[] {
+export function augmentAjvErrors(errors: ErrorObject[] = []): ErrorObject[] {
   errors.forEach((e) => {
     if (e.keyword === 'enum') {
       const params: any = e.params;
@@ -54,22 +78,35 @@ export function augmentAjvErrors(
         : e.message;
     }
   });
-  return errors;
+  const serDesPaths = new Set<string>();
+  return errors.filter((e) => {
+    if (serDesPaths.has(e.schemaPath)) {
+      return false;
+    }
+    if (e.params['x-eov-res-serdes']) {
+      // If response serialization failed,
+      // silence additional errors about not being a string.
+      serDesPaths.add(e.schemaPath.replace('x-eov-res-serdes', 'x-eov-type'));
+    }
+    return true;
+  });
 }
 export function ajvErrorsToValidatorError(
   status: number,
-  errors: Ajv.ErrorObject[],
+  errors: ErrorObject[],
 ): ValidationError {
   return {
     status,
     errors: errors.map((e) => {
       const params: any = e.params;
       const required =
-        params?.missingProperty && e.dataPath + '.' + params.missingProperty;
+        params?.missingProperty &&
+        e.instancePath + '/' + params.missingProperty;
       const additionalProperty =
         params?.additionalProperty &&
-        e.dataPath + '.' + params.additionalProperty;
-      const path = required ?? additionalProperty ?? e.dataPath ?? e.schemaPath;
+        e.instancePath + '/' + params.additionalProperty;
+      const path =
+        required ?? additionalProperty ?? e.instancePath ?? e.schemaPath;
       return {
         path,
         message: e.message,
@@ -92,23 +129,28 @@ export const findResponseContent = function (
   accepts: string[],
   expectedTypes: string[],
 ): string {
-  const expectedTypesSet = new Set(expectedTypes);
+  const expectedTypesMap = new Map();
+  for(let type of expectedTypes) {
+    expectedTypesMap.set(ContentType.fromString(type).normalize(), type);
+  }
+  
   // if accepts are supplied, try to find a match, and use its validator
   for (const accept of accepts) {
     const act = ContentType.fromString(accept);
-    if (act.contentType === '*/*') {
+    const normalizedCT = act.normalize();
+    if (normalizedCT === '*/*') {
       return expectedTypes[0];
-    } else if (expectedTypesSet.has(act.contentType)) {
-      return act.contentType;
-    } else if (expectedTypesSet.has(act.mediaType)) {
+    } else if (expectedTypesMap.has(normalizedCT)) {
+      return normalizedCT;
+    } else if (expectedTypesMap.has(act.mediaType)) {
       return act.mediaType;
     } else if (act.isWildCard) {
       // wildcard of type application/*
-      const [type] = act.contentType.split('/', 1);
+      const [type] = normalizedCT.split('/', 1);
 
-      for (const expectedType of expectedTypesSet) {
-        if (new RegExp(`^${type}\/.+$`).test(expectedType)) {
-          return expectedType;
+      for (const expectedType of expectedTypesMap) {
+        if (new RegExp(`^${type}\/.+$`).test(expectedType[0])) {
+          return expectedType[1];
         }
       }
     } else {
@@ -122,3 +164,10 @@ export const findResponseContent = function (
   }
   return null;
 };
+
+export const zipObject = (keys, values) =>
+  keys.reduce((acc, key, idx) => {
+    acc[key] = values[idx]
+    return acc
+  }, {})
+

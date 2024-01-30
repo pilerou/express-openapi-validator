@@ -1,4 +1,4 @@
-import { Ajv, ValidateFunction } from 'ajv';
+import Ajv, { ValidateFunction } from 'ajv';
 import { createRequestAjv } from '../framework/ajv';
 import {
   ContentType,
@@ -42,6 +42,8 @@ export class RequestValidator {
   ) {
     this.middlewareCache = {};
     this.apiDoc = apiDoc;
+    // Examples not needed for validation
+    delete this.apiDoc.components?.examples;
     this.requestOpts.allowUnknownQueryParameters =
       options.allowUnknownQueryParameters;
     this.ajv = createRequestAjv(apiDoc, { ...options, coerceTypes: true });
@@ -65,7 +67,7 @@ export class RequestValidator {
     const reqSchema = openapi.schema;
     // cache middleware by combining method, path, and contentType
     const contentType = ContentType.from(req);
-    const contentTypeKey = contentType.equivalents()[0] ?? 'not_provided';
+    const contentTypeKey = contentType.normalize() ?? 'not_provided';
     // use openapi.expressRoute as path portion of key
     const key = `${req.method}-${path}-${contentTypeKey}`;
 
@@ -74,6 +76,20 @@ export class RequestValidator {
       this.middlewareCache[key] = middleware;
     }
     return this.middlewareCache[key](req, res, next);
+  }
+
+  private warnUnknownQueryParametersKeyword(
+    reqSchema: OperationObject,
+  ): boolean {
+    if (typeof reqSchema['x-allow-unknown-query-parameters'] === 'boolean') {
+      console.warn(
+        '"x-allow-unknown-query-parameters" is deprecated. Use "x-eov-allow-unknown-query-parameters"',
+      );
+    }
+    return (
+      reqSchema['x-allow-unknown-query-parameters'] ??
+      this.requestOpts.allowUnknownQueryParameters
+    );
   }
 
   private buildMiddleware(
@@ -92,8 +108,8 @@ export class RequestValidator {
     });
 
     const allowUnknownQueryParameters = !!(
-      reqSchema['x-allow-unknown-query-parameters'] ??
-      this.requestOpts.allowUnknownQueryParameters
+      reqSchema['x-eov-allow-unknown-query-parameters'] ??
+      this.warnUnknownQueryParametersKeyword(reqSchema)
     );
 
     return (req: OpenApiRequest, res: Response, next: NextFunction): void => {
@@ -150,6 +166,11 @@ export class RequestValidator {
         body: req.body,
       };
       const schemaBody = <any>validator?.schemaBody;
+
+      if (contentType.mediaType === 'multipart/form-data') {
+        this.multipartNested(req, schemaBody);
+      }
+
       const discriminator = schemaBody?.properties?.body?._discriminator;
       const discriminatorValidator = this.discriminatorValidator(
         req,
@@ -182,6 +203,22 @@ export class RequestValidator {
     };
   }
 
+  private multipartNested(req, schemaBody) {
+    Object.keys(req.body).forEach((key) => {
+      const value = req.body[key];
+      // TODO: Add support for oneOf, anyOf, allOf as the body schema
+      const type = schemaBody?.properties?.body?.properties?.[key]?.type;
+      if (['array', 'object'].includes(type)) {
+        try {
+          req.body[key] = JSON.parse(value);
+        } catch (e) {
+          // NOOP
+        }
+      }
+    });
+    return null;
+  }
+
   private discriminatorValidator(req, discriminator) {
     if (discriminator) {
       const { options, property, validators } = discriminator;
@@ -191,7 +228,7 @@ export class RequestValidator {
       } else {
         throw new BadRequest({
           path: req.path,
-          message: `'${property}' should be equal to one of the allowed values: ${options
+          message: `'${property}' must be equal to one of the allowed values: ${options
             .map((o) => o.option)
             .join(', ')}.`,
         });
@@ -216,12 +253,12 @@ export class RequestValidator {
     for (const q of queryParams) {
       if (!knownQueryParams.has(q)) {
         throw new BadRequest({
-          path: `.query.${q}`,
+          path: `/query/${q}`,
           message: `Unknown query parameter '${q}'`,
         });
       } else if (!allowedEmpty?.has(q) && (query[q] === '' || null)) {
         throw new BadRequest({
-          path: `.query.${q}`,
+          path: `/query/${q}`,
           message: `Empty value found for query parameter '${q}'`,
         });
       }

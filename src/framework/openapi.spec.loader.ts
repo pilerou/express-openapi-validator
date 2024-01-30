@@ -64,7 +64,8 @@ export class OpenApiSpecLoader {
                 continue;
               }
               const pathParams = new Set<string>();
-              for (const param of schema.parameters ?? []) {
+              const parameters = [...schema.parameters ?? [], ...methods.parameters ?? []]
+              for (const param of parameters) {
                 if (param.in === 'path') {
                   pathParams.add(param.name);
                 }
@@ -104,7 +105,7 @@ export class OpenApiSpecLoader {
 
     // instead create our own syntax that is compatible with express' pathToRegex
     // /{path}* => /:path*)
-    // /{path}(*) => /:path*) 
+    // /{path}(*) => /:path*)
     const pass1 = part.replace(/\/{([^\*]+)}\({0,1}(\*)\){0,1}/g, '/:$1$2');
     // substitute params with express equivalent
     // /path/{id} => /path/:id

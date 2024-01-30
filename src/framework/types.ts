@@ -1,5 +1,6 @@
 import * as ajv from 'ajv';
 import * as multer from 'multer';
+import { FormatsPluginOptions, FormatOptions } from 'ajv-formats';
 import { Request, Response, NextFunction } from 'express';
 export { OpenAPIFrameworkArgs };
 
@@ -39,9 +40,10 @@ export interface MultipartOpts {
 export interface Options extends ajv.Options {
   // Specific options
   serDesMap?: SerDesMap;
+  ajvFormats?: FormatsPluginOptions;
 }
 
-export interface RequestValidatorOptions extends Options, ValidateRequestOpts {}
+export interface RequestValidatorOptions extends Options, ValidateRequestOpts { }
 
 export type ValidateRequestOpts = {
   allowUnknownQueryParameters?: boolean;
@@ -72,7 +74,6 @@ export type Format = {
 
 export type SerDes = {
   format: string;
-  jsonType?: string;
   serialize?: (o: unknown) => string;
   deserialize?: (s: string) => unknown;
 };
@@ -81,30 +82,25 @@ export class SerDesSingleton implements SerDes {
   serializer: SerDes;
   deserializer: SerDes;
   format: string;
-  jsonType: string;
   serialize?: (o: unknown) => string;
   deserialize?: (s: string) => unknown;
 
   constructor(param: {
     format: string;
-    jsonType?: string;
     serialize: (o: unknown) => string;
     deserialize: (s: string) => unknown;
   }) {
     this.format = param.format;
-    this.jsonType = param.jsonType || 'object';
     this.serialize = param.serialize;
     this.deserialize = param.deserialize;
     this.deserializer = {
       format: param.format,
-      jsonType: param.jsonType || 'object',
-      deserialize: param.deserialize
-    }
+      deserialize: param.deserialize,
+    };
     this.serializer = {
       format: param.format,
-      jsonType: param.jsonType || 'object',
-      serialize: param.serialize
-    }
+      serialize: param.serialize,
+    };
   }
 };
 
@@ -122,16 +118,37 @@ export interface OpenApiValidatorOpts {
   ignoreUndocumented?: boolean;
   securityHandlers?: SecurityHandlers;
   coerceTypes?: boolean | 'array';
+  useRequestUrl?: boolean;
+  /**
+   * @deprecated
+   * Use `formats` + `validateFormats` to ignore specified formats
+   */
   unknownFormats?: true | string[] | 'ignore';
   serDes?: SerDes[];
-  formats?: Format[];
+  formats?: Format[] | Record<string, ajv.Format>;
+  ajvFormats?: FormatsPluginOptions;
   fileUploader?: boolean | multer.Options;
   multerOpts?: multer.Options;
   $refParser?: {
     mode: 'bundle' | 'dereference';
   };
   operationHandlers?: false | string | OperationHandlerOptions;
-  validateFormats?: false | 'fast' | 'full';
+  validateFormats?: boolean | 'fast' | 'full';
+}
+
+export interface NormalizedOpenApiValidatorOpts extends OpenApiValidatorOpts {
+  validateApiSpec: boolean;
+  validateResponses: false | ValidateResponseOpts;
+  validateRequests: false | ValidateRequestOpts;
+  validateSecurity: false | ValidateSecurityOpts;
+  fileUploader: boolean | multer.Options;
+  $refParser: {
+    mode: 'bundle' | 'dereference';
+  };
+  operationHandlers: false | OperationHandlerOptions;
+  formats: Record<string, ajv.Format>;
+  validateFormats: boolean;
+  unknownFormats?: never;
 }
 
 export namespace OpenAPIV3 {
@@ -223,7 +240,7 @@ export namespace OpenAPIV3 {
     in: string;
   }
 
-  export interface HeaderObject extends ParameterBaseObject {}
+  export interface HeaderObject extends ParameterBaseObject { }
 
   interface ParameterBaseObject {
     description?: string;
@@ -246,19 +263,29 @@ export namespace OpenAPIV3 {
     | 'string'
     | 'integer';
   export type ArraySchemaObjectType = 'array';
-  export type SchemaObject = ArraySchemaObject | NonArraySchemaObject;
 
-  export interface ArraySchemaObject extends BaseSchemaObject {
-    type: ArraySchemaObjectType;
+  export type SchemaObject = ArraySchemaObject | NonArraySchemaObject | CompositionSchemaObject;
+
+  export interface ArraySchemaObject extends BaseSchemaObject<ArraySchemaObjectType> {
     items: ReferenceObject | SchemaObject;
   }
 
-  export interface NonArraySchemaObject extends BaseSchemaObject {
-    type: NonArraySchemaObjectType;
+  export interface NonArraySchemaObject extends BaseSchemaObject<NonArraySchemaObjectType> {
   }
 
-  interface BaseSchemaObject {
+  export interface CompositionSchemaObject extends BaseSchemaObject<undefined> {
     // JSON schema allowed properties, adjusted for OpenAPI
+    allOf?: Array<ReferenceObject | SchemaObject>;
+    oneOf?: Array<ReferenceObject | SchemaObject>;
+    anyOf?: Array<ReferenceObject | SchemaObject>;
+    not?: ReferenceObject | SchemaObject;
+    // OpenAPI-specific properties
+    discriminator?: DiscriminatorObject;
+  }
+
+  interface BaseSchemaObject<T> {
+    // JSON schema allowed properties, adjusted for OpenAPI
+    type?: T;
     title?: string;
     description?: string;
     format?: string;
@@ -282,19 +309,15 @@ export namespace OpenAPIV3 {
     properties?: {
       [name: string]: ReferenceObject | SchemaObject;
     };
-    allOf?: Array<ReferenceObject | SchemaObject>;
-    oneOf?: Array<ReferenceObject | SchemaObject>;
-    anyOf?: Array<ReferenceObject | SchemaObject>;
-    not?: ReferenceObject | SchemaObject;
 
     // OpenAPI-specific properties
     nullable?: boolean;
-    discriminator?: DiscriminatorObject;
     readOnly?: boolean;
     writeOnly?: boolean;
     xml?: XMLObject;
     externalDocs?: ExternalDocumentationObject;
     example?: any;
+    examples?: any;
     deprecated?: boolean;
 
     // Express-openapi-validator specific properties
@@ -537,7 +560,7 @@ export interface ValidationError {
 export interface ValidationErrorItem {
   path: string;
   message: string;
-  error_code?: string;
+  errorCode?: string;
 }
 
 interface ErrorHeaders {
